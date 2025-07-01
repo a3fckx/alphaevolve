@@ -1,6 +1,7 @@
 """Circle packing problem for AlphaEvolve."""
 
 import asyncio
+import logging
 import math
 from typing import List, Tuple, Dict, Any
 
@@ -11,6 +12,15 @@ from src.evaluator import EvaluationResult
 # Problem definition
 PROBLEM_ID = "circle_packing_26"
 PROBLEM_DESCRIPTION = """
+This problem challenges the model to find the densest packing of N equal and non-overlapping circles inside a unit square.
+This is a classic and difficult optimization problem, especially as N increases.
+The goal is to maximize the radius of the circles.
+
+The evolvable code block is the `pack_circles(n)` function, which should implement an algorithm to find the circle centers.
+
+Note: For n=26, the SOTA was 2.634, and a previous version of AlphaEvolve improved it to 2.635.
+For n=36, the SOTA was 2.936, and AlphaEvolve improved it to 2.937.
+
 Pack 26 circles of equal radius into a unit square (1x1) to solve an advanced optimization challenge such that:
 1. No circles overlap (the distance between centers must be at least twice the radius)
 2. All circles are completely inside the square (centers must be within radius distance from all edges)
@@ -230,29 +240,165 @@ except Exception as e:
         os.unlink(script_path)
 
 
-async def run_circle_packing(config_path: str = None):
-    """Run the circle packing evolution."""
-    # Configuration is loaded directly in AlphaEvolve, pass the path if needed
-    evolve = AlphaEvolve(
-        problem_id=PROBLEM_ID,
+async def main():
+    """Main function to run the evolution."""
+    logging.basicConfig(level=logging.INFO)
+    
+    # The initial code is now passed directly to the constructor
+    evolver = AlphaEvolve(
+        problem_id="circle_packing",
         problem_description=PROBLEM_DESCRIPTION,
         evaluation_criteria=EVALUATION_CRITERIA,
-        problem_type="optimization",
-        custom_evaluator=evaluate_circle_packing,
-        config_path=config_path if config_path else "config/config.yaml"
+        initial_code="""
+def pack_circles(n):
+    # Your implementation here
+    return [], 0.0
+""",
+        test_cases=None
     )
     
-    best_program = await evolve.run()
+    best_program = await evolver.run()
     
-    print(f"\nBest program achieved radius: {best_program.metrics.get('radius', 0):.6f}")
-    print(f"Score: {best_program.score:.4f}")
-    print("\nCode:")
-    print(best_program.code)
-    
-    return best_program
-
+    if best_program:
+        logger.info(f"Best program found with score: {best_program.score}")
+        # You can save or inspect the best program's code
+        # print(best_program.code)
+    else:
+        logger.info("Evolution finished without a valid program.")
 
 if __name__ == "__main__":
     import sys
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
-    asyncio.run(run_circle_packing(config_path))
+    asyncio.run(main())
+
+
+def pack_circles(n):
+    """
+    Packs n circles of equal radius into a unit square, maximizing the radius.
+    """
+    if n <= 0:
+        return [], 0.0
+
+    # EVOLVE-BLOCK-START
+    # Initial guess for radius - a very small value to start
+    # The maximum possible radius for n=1 is 0.5
+    # For n=26, it will be significantly smaller.
+    # A simple grid packing of 5x5 would give a radius of 1/(2*5) = 0.1
+    # So, let's start with a radius slightly larger than that for initial attempts.
+    # We will use a binary search approach to find the maximum radius.
+
+    low = 0.0
+    # A safe upper bound for the radius is 0.5 (for n=1).
+    # For n=26, it will be much smaller, but 0.5 is a valid upper bound.
+    high = 0.5
+    best_radius = 0.0
+    best_centers = []
+
+    # Number of iterations for the binary search. More iterations lead to higher precision.
+    # 100 iterations are usually sufficient for good precision.
+    num_binary_search_iterations = 100
+
+    for _ in range(num_binary_search_iterations):
+        mid_radius = (low + high) / 2.0
+        if mid_radius == 0: # Avoid division by zero if high becomes very small
+            break
+
+        # Try to place n circles with the current mid_radius
+        # We'll use a simple random placement strategy with some local optimization
+        # to try and find a valid packing for the given radius.
+        # If we can successfully place n circles, we try a larger radius.
+        # If not, we try a smaller radius.
+
+        # --- Attempt to place n circles with mid_radius ---
+        # This is the core of the problem and the most challenging part.
+        # For a general n, there's no simple analytical solution.
+        # We'll use a heuristic approach: random placement with some checks.
+        # A more robust solution would involve complex optimization algorithms (e.g., simulated annealing, genetic algorithms).
+        # Given the constraints (no external libraries), we'll stick to a simpler heuristic.
+
+        current_centers = []
+        max_attempts_per_circle = 5000  # Limit attempts to place a single circle
+        placement_successful = False
+
+        # Try to place n circles
+        for _ in range(n):
+            placed = False
+            for attempt in range(max_attempts_per_circle):
+                # Generate a random center within the valid region for a circle of radius mid_radius
+                x = random.uniform(mid_radius, 1.0 - mid_radius)
+                y = random.uniform(mid_radius, 1.0 - mid_radius)
+                new_center = (x, y)
+
+                # Check if this new circle overlaps with existing ones or goes out of bounds
+                if is_within_bounds(new_center, mid_radius) and is_valid_placement(current_centers + [new_center], mid_radius):
+                    current_centers.append(new_center)
+                    placed = True
+                    break # Successfully placed this circle, move to the next
+
+            if not placed:
+                # Failed to place the current circle, so this radius is too large
+                break
+
+        if len(current_centers) == n:
+            # Successfully placed all n circles with mid_radius
+            # This radius is achievable, so we try for a larger one
+            best_radius = mid_radius
+            best_centers = current_centers
+            low = mid_radius
+        else:
+            # Could not place all n circles with mid_radius
+            # This radius is too large, so we try a smaller one
+            high = mid_radius
+
+    # After binary search, best_radius and best_centers hold the best found packing.
+    # For n=26, the random placement might not be the most optimal or symmetrical.
+    # We can try to improve the symmetry and distribution of the best found centers.
+
+    # --- Post-processing for Symmetry and Distribution ---
+    # This is a simple local search/adjustment.
+    # We can try to move each center slightly to improve its position relative to others
+    # and the boundaries, aiming for better symmetry.
+
+    # A very basic approach: try to center the packing.
+    if best_centers:
+        avg_x = sum(c[0] for c in best_centers) / n
+        avg_y = sum(c[1] for c in best_centers) / n
+        offset_x = 0.5 - avg_x
+        offset_y = 0.5 - avg_y
+
+        adjusted_centers = []
+        for cx, cy in best_centers:
+            new_cx = cx + offset_x
+            new_cy = cy + offset_y
+            # Ensure adjusted centers are still within bounds for the radius
+            # This might slightly reduce the radius if adjustment pushes them out
+            # but it's a trade-off for symmetry.
+            # For simplicity here, we'll assume the offset is small enough not to violate it severely
+            # or that the binary search already found a radius that allows some flexibility.
+            # A more robust solution would re-check validity after adjustment.
+            adjusted_centers.append((new_cx, new_cy))
+        
+        # Re-check validity after adjustment, though it might be strict.
+        # For this problem, we prioritize the radius found.
+        # If adjustments break constraints, we might stick to the original best_centers.
+        # For now, we'll return the adjusted centers if they are valid.
+
+        is_adjusted_valid = True
+        for i, center in enumerate(adjusted_centers):
+            if not is_within_bounds(center, best_radius):
+                is_adjusted_valid = False
+                break
+            for j in range(i):
+                if distance(center, adjusted_centers[j]) < 2 * best_radius:
+                    is_adjusted_valid = False
+                    break
+            if not is_adjusted_valid:
+                break
+        
+        if is_adjusted_valid:
+            best_centers = adjusted_centers
+        # If adjustment made it invalid, we keep the original best_centers.
+    # EVOLVE-BLOCK-END
+
+    return best_centers, best_radius
+
+# Example usage:

@@ -1,256 +1,97 @@
-"""Prompt generation for evolutionary code optimization."""
+"""Generates prompts for the LLM based on the problem and evolution state."""
 
-import random
-from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from typing import List, Optional
 
 from .database import Program
+from .utils import reconstruct_code
 
 
 @dataclass
-class EvolutionPrompt:
-    """Represents a prompt for code evolution."""
+class Prompt:
+    """Represents a prompt to be sent to the LLM."""
     system_prompt: str
     user_prompt: str
-    parent_program: Optional[Program] = None
-    context_programs: List[Program] = None
 
 
 class PromptSampler:
-    """Generates prompts for code evolution using various strategies."""
+    """Generates prompts for the LLM based on the problem and evolution state."""
     
     def __init__(self, problem_description: str, evaluation_criteria: str):
-        """Initialize prompt sampler."""
+        """Initialize the prompt sampler."""
         self.problem_description = problem_description
         self.evaluation_criteria = evaluation_criteria
-        self.evolution_strategies = [
-            self._mutation_prompt,
-            self._crossover_prompt,
-            self._optimization_prompt,
-            self._exploration_prompt,
-            self._refinement_prompt
-        ]
-    
-    def generate_initial_prompt(self) -> EvolutionPrompt:
-        """Generate prompt for initial population."""
-        system_prompt = """You are an expert programmer tasked with solving algorithmic problems.
-Generate clean, efficient, and correct Python code that solves the given problem.
-Focus on performance and correctness. Always include proper error handling."""
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
 
-Evaluation Criteria:
-{self.evaluation_criteria}
-
-Please provide a Python solution to this problem. The code should be complete and runnable.
-Include any necessary imports at the beginning of the code.
-
-IMPORTANT: Start with a simple working solution. For the circle packing problem, you might start with a simple grid arrangement or random placement that satisfies the constraints, even if it's not optimal.
-
-Example structure:
-```python
-def pack_circles(n):
-    # Your algorithm here
-    centers = []  # List of (x, y) tuples
-    radius = 0.05  # Start with a reasonable radius
-    
-    # Generate circle positions
-    # ... your code ...
-    
-    return centers, radius
-```"""
-        
-        return EvolutionPrompt(system_prompt=system_prompt, user_prompt=user_prompt)
-    
-    def generate_evolution_prompt(self, 
-                                parent: Optional[Program] = None,
-                                population: List[Program] = None,
-                                strategy: Optional[str] = None) -> EvolutionPrompt:
-        """Generate prompt for evolving existing programs."""
-        if strategy:
-            strategy_map = {
-                "mutation": self._mutation_prompt,
-                "crossover": self._crossover_prompt,
-                "optimization": self._optimization_prompt,
-                "exploration": self._exploration_prompt,
-                "refinement": self._refinement_prompt
-            }
-            strategy_func = strategy_map.get(strategy, random.choice(self.evolution_strategies))
-        else:
-            strategy_func = random.choice(self.evolution_strategies)
-        
-        return strategy_func(parent, population)
-    
-    def _mutation_prompt(self, parent: Program, population: List[Program]) -> EvolutionPrompt:
-        """Generate mutation prompt."""
-        system_prompt = """You are an expert programmer specializing in code optimization and evolution.
-Your task is to mutate existing code to improve its performance while maintaining correctness."""
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
-
-Evaluation Criteria:
-{self.evaluation_criteria}
-
-Parent Program (Score: {parent.score:.4f}):
-```python
-{parent.code}
-```
-
-Please mutate this program to improve its performance. Consider:
-1. Algorithmic improvements
-2. Data structure optimizations
-3. Computational efficiency
-4. Memory usage
-5. Edge case handling
-
-Generate an improved version that maintains correctness while achieving better performance."""
-        
-        return EvolutionPrompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            parent_program=parent
+    def generate_initial_prompt(self) -> Prompt:
+        """Generate the initial prompt to create the first version of the code."""
+        system_prompt = (
+            "You are an expert programmer tasked with solving a challenging problem. "
+            "Your goal is to write a complete Python program that solves the problem described below. "
+            "The program should be self-contained and all necessary logic should be implemented."
         )
-    
-    def _crossover_prompt(self, parent: Program, population: List[Program]) -> EvolutionPrompt:
-        """Generate crossover prompt combining features from multiple programs."""
-        # Select another high-performing program for crossover
-        other_programs = [p for p in population if p.id != parent.id and p.score is not None]
-        if not other_programs:
-            return self._mutation_prompt(parent, population)
         
-        other = max(other_programs, key=lambda p: p.score)
-        
-        system_prompt = """You are an expert programmer specializing in genetic programming.
-Your task is to combine the best features from multiple programs to create a superior solution."""
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
-
-Evaluation Criteria:
-{self.evaluation_criteria}
-
-Program A (Score: {parent.score:.4f}):
-```python
-{parent.code}
-```
-
-Program B (Score: {other.score:.4f}):
-```python
-{other.code}
-```
-
-Analyze both programs and create a new solution that combines their best features.
-The new program should leverage the strengths of both approaches while avoiding their weaknesses."""
-        
-        return EvolutionPrompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            parent_program=parent,
-            context_programs=[other]
+        user_prompt = (
+            f"# Problem Description\n"
+            f"{self.problem_description}\n\n"
+            f"# Evaluation Criteria\n"
+            f"{self.evaluation_criteria}\n\n"
+            f"Please provide a complete Python program that solves this problem. "
+            f"Enclose the code in a single markdown code block (```python...```)."
         )
-    
-    def _optimization_prompt(self, parent: Program, population: List[Program]) -> EvolutionPrompt:
-        """Generate prompt focused on specific optimizations."""
-        optimization_focus = random.choice([
-            "time complexity",
-            "space complexity",
-            "cache efficiency",
-            "vectorization",
-            "parallelization",
-            "numerical stability"
-        ])
         
-        system_prompt = f"""You are an expert in {optimization_focus} optimization.
-Your task is to optimize existing code with a specific focus on improving {optimization_focus}."""
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
+        return Prompt(system_prompt, user_prompt)
 
-Evaluation Criteria:
-{self.evaluation_criteria}
+    def generate_block_evolution_prompt(
+        self, 
+        code_template: str,
+        evolve_block_index: int,
+        evolve_block_code: str,
+        previous_attempts: Optional[List[dict]] = None
+    ) -> Prompt:
+        """
+        Generate a prompt to evolve a specific block of code.
 
-Current Program (Score: {parent.score:.4f}):
-```python
-{parent.code}
-```
-
-Optimize this program with a specific focus on {optimization_focus}.
-Maintain correctness while achieving significant improvements in {optimization_focus}."""
-        
-        return EvolutionPrompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            parent_program=parent
+        Args:
+            code_template: The program code with placeholders for evolvable blocks.
+            evolve_block_index: The index of the block to evolve.
+            evolve_block_code: The current code of the block to be evolved.
+            previous_attempts: A list of previous attempts for this block and their scores.
+        """
+        system_prompt = (
+            "You are an expert programmer and a creative problem solver. "
+            "Your task is to improve a specific block of code within a larger program. "
+            "You will be given the context of the full program, the specific block to improve, and the evaluation criteria. "
+            "Your goal is to rewrite the code block to better solve the problem. "
+            "Do not just make trivial changes. Think of novel algorithms and creative solutions."
         )
-    
-    def _exploration_prompt(self, parent: Program, population: List[Program]) -> EvolutionPrompt:
-        """Generate prompt for exploring new algorithmic approaches."""
-        system_prompt = """You are a creative algorithm designer.
-Your task is to explore novel algorithmic approaches that might not be immediately obvious."""
-        
-        # Show top performers to avoid
-        top_programs = sorted([p for p in population if p.score is not None], 
-                            key=lambda p: p.score, reverse=True)[:3]
-        
-        existing_approaches = "\n\n".join([
-            f"Approach {i+1} (Score: {p.score:.4f}):\n```python\n{p.code}\n```"
-            for i, p in enumerate(top_programs)
-        ])
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
 
-Evaluation Criteria:
-{self.evaluation_criteria}
+        # Show the full program context with a marker for the block being evolved
+        context_blocks = [f"{{{{EVOLVE_BLOCK_{i}}}}}" for i in range(code_template.count("EVOLVE_BLOCK"))]
+        context_blocks[evolve_block_index] = f"\n# --- THIS IS THE BLOCK TO EVOLVE ---\n{evolve_block_code}\n# --- END OF BLOCK TO EVOLVE ---\n"
+        full_context_code = reconstruct_code(code_template, context_blocks)
 
-Existing approaches:
-{existing_approaches}
+        history_section = ""
+        if previous_attempts:
+            history_section = "\n# Previous Attempts for this Block\n"
+            for attempt in previous_attempts:
+                history_section += f"- Score: {attempt['score']:.4f}\n"
+                history_section += f"  ```python\n{attempt['code']}\n```\n"
 
-Generate a completely different algorithmic approach to solve this problem.
-Think outside the box and explore unconventional solutions that might achieve breakthrough performance."""
-        
-        return EvolutionPrompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            context_programs=top_programs
+        user_prompt = (
+            f"# Problem Description\n"
+            f"{self.problem_description}\n\n"
+            f"# Evaluation Criteria\n"
+            f"{self.evaluation_criteria}\n\n"
+            f"# Full Program Context\n"
+            f"Here is the full program. You must improve the block marked for evolution.\n"
+            f"```python\n{full_context_code}\n```\n\n"
+            f"# Current Code Block to Evolve\n"
+            f"This is the specific code block you must rewrite and improve:\n"
+            f"```python\n{evolve_block_code}\n```\n"
+            f"{history_section}"
+            f"Please provide only the new, improved code for this block. "
+            f"Do not include the surrounding markers or the rest of the program. "
+            f"Enclose your new code block in a single markdown code block (```python...```)."
         )
-    
-    def _refinement_prompt(self, parent: Program, population: List[Program]) -> EvolutionPrompt:
-        """Generate prompt for fine-tuning and polishing."""
-        system_prompt = """You are a code optimization expert specializing in fine-tuning.
-Your task is to make small but impactful improvements to already high-performing code."""
-        
-        # Analyze parent's metrics if available
-        metrics_analysis = ""
-        if parent.metrics:
-            metrics_analysis = f"\nPerformance Metrics:\n{parent.metrics}"
-        
-        user_prompt = f"""Problem Description:
-{self.problem_description}
 
-Evaluation Criteria:
-{self.evaluation_criteria}
-
-Current Best Program (Score: {parent.score:.4f}):
-```python
-{parent.code}
-```
-{metrics_analysis}
-
-This program is already performing well. Make targeted refinements to push its performance even further.
-Focus on:
-1. Micro-optimizations
-2. Constant factor improvements
-3. Better handling of edge cases
-4. Reducing overhead
-5. Improving numerical precision
-
-Every small improvement counts."""
-        
-        return EvolutionPrompt(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            parent_program=parent
-        )
+        return Prompt(system_prompt, user_prompt)

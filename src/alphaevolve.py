@@ -8,13 +8,13 @@ from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from dotenv import load_dotenv
+import yaml
 
 from .database import Database, Program, EvolutionRun, RunStatus, ProgramStatus
 from .openai_client import OpenAIClient
 from .prompt_sampler import PromptSampler
 from .evaluator import CodeEvaluator, EvaluationResult
-from .evolution_strategies import EvolutionStrategy
-import yaml
+from .utils import parse_evolve_blocks, reconstruct_code
 
 # Load environment variables
 load_dotenv()
@@ -26,12 +26,229 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AlphaEvolveConfig:
     """Configuration for AlphaEvolve."""
-    population_size: int
-    generations: int
-    elite_size: int
-    mutation_rate: float
-    crossover_rate: float
-    exploration_rate: float
+    iterations: int
+    checkpoint_interval: int
+
+    # LLM settings
+    model: str
+    temperature: float
+    max_tokens: int
+
+    # Evaluation settings
+    evaluation_timeout: int
+    memory_limit_mb: int
+
+
+class AlphaEvolve:
+    """Main orchestrator for the AlphaEvolve process."""
+
+    def __init__(self,
+                 problem_id: str,
+                 problem_description: str,
+                 evaluation_criteria: str,
+                 initial_code: str,
+                 problem_type: str,
+                 test_cases: List[Dict[str, Any]],
+                 custom_evaluator: Optional[Callable] = None,
+                 config: Optional[AlphaEvolveConfig] = None,
+                 database_url: Optional[str] = None,
+                 config_path: str = "config/config.yaml"):
+        """Initialize AlphaEvolve."""
+        self.problem_id = problem_id
+        self.problem_description = problem_description
+        self.evaluation_criteria = evaluation_criteria
+        self.initial_code = initial_code
+        self.problem_type = problem_type
+        self.test_cases = test_cases
+
+        # Load configuration from file if not provided
+        if config is None:
+            config_dict = {}
+            try:
+                with open(config_path, 'r') as f:
+                    config_dict = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"Failed to load config from {config_path}: {e}")
+
+            openai_config = config_dict.get('openai', {})
+            evaluation_config = config_dict.get('evaluation', {})
+
+            self.config = AlphaEvolveConfig(
+                iterations=config_dict.get('iterations', 100),
+                checkpoint_interval=config_dict.get('checkpoint_interval', 10),
+                model=openai_config.get('model', 'gpt-4-turbo'),
+                temperature=openai_config.get('temperature', 0.7),
+                max_tokens=openai_config.get('max_tokens', 4096),
+                evaluation_timeout=evaluation_config.get('timeout', 30),
+                memory_limit_mb=evaluation_config.get('memory_limit_mb', 512),
+            )
+        else:
+            self.config = config
+
+        # Initialize components
+        self.db = Database(database_url or os.getenv("DATABASE_URL", "sqlite:///alphaevolve.db"))
+        self.llm_client = OpenAIClient(model=self.config.model)
+        self.prompt_sampler = PromptSampler(problem_description, evaluation_criteria)
+        self.evaluator = CodeEvaluator(
+            timeout=self.config.evaluation_timeout,
+            memory_limit_mb=self.config.memory_limit_mb,
+            custom_evaluator=custom_evaluator
+        )
+
+        # State for block-based evolution
+        self.current_run: Optional[EvolutionRun] = None
+        self.current_run_id: Optional[str] = None
+        self.best_program: Optional[Program] = None
+        self.code_template: Optional[str] = None
+        self.evolvable_blocks: List[str] = []
+        self.block_evolution_idx = 0
+
+    async def run(self, resume_from_checkpoint: bool = False) -> Program:
+        """Run the block-based evolution process."""
+        try:
+            await self._initialize_run(resume_from_checkpoint)
+            logger.info(f"Starting evolution run {self.current_run_id} for problem {self.problem_id}")
+
+            for i in range(self.config.iterations):
+                logger.info(f"Iteration {i + 1}/{self.config.iterations}")
+
+                # 1. Select a block to evolve
+                block_to_evolve_idx = self.block_evolution_idx % len(self.evolvable_blocks)
+                
+                # 2. Generate a prompt to improve the block
+                prompt = self.prompt_sampler.sample_block_evolution_prompt(
+                    code_template=self.code_template,
+                    evolvable_blocks=self.evolvable_blocks,
+                    block_to_evolve_idx=block_to_evolve_idx
+                )
+
+                # 3. Get a new block from the LLM
+                logger.info(f"Evolving block {block_to_evolve_idx}...")
+                new_block_code = await self.llm_client.generate_code(prompt)
+
+                if not new_block_code:
+                    logger.warning("LLM failed to generate new code for the block. Skipping iteration.")
+                    continue
+
+                # 4. Create a candidate program
+                candidate_blocks = self.evolvable_blocks[:]
+                candidate_blocks[block_to_evolve_idx] = new_block_code
+                candidate_code = reconstruct_code(self.code_template, candidate_blocks)
+
+                # 5. Evaluate the candidate program
+                logger.info("Evaluating candidate program...")
+                evaluation_result = await self.evaluator.evaluate(candidate_code, self.test_cases)
+
+                # 6. Save the candidate program and its evaluation
+                candidate_program = await self.db.add_program(
+                    run_id=self.current_run_id,
+                    code=candidate_code,
+                    fitness=evaluation_result.fitness,
+                    evaluation_output=json.dumps(evaluation_result.details),
+                    status=ProgramStatus.EVALUATED,
+                    parent_program_id=self.best_program.id
+                )
+
+                # 7. Update the best program if the candidate is better
+                if evaluation_result.fitness is not None and (self.best_program.fitness is None or evaluation_result.fitness > self.best_program.fitness):
+                    logger.info(f"New best program found with fitness {evaluation_result.fitness} (previously {self.best_program.fitness})")
+                    self.best_program = candidate_program
+                    self.evolvable_blocks = candidate_blocks # Update the blocks with the improved version
+                else:
+                    logger.info(f"Candidate program did not improve fitness. Sticking with current best (fitness: {self.best_program.fitness}).")
+
+                # 8. Update block selection index for next iteration
+                self.block_evolution_idx += 1
+                
+                # 9. Checkpoint
+                if (i + 1) % self.config.checkpoint_interval == 0:
+                    await self._save_checkpoint()
+
+            await self.db.update_run_status(self.current_run_id, RunStatus.COMPLETED)
+            logger.info(f"Evolution run {self.current_run_id} completed.")
+
+        except Exception as e:
+            logger.error(f"Evolution failed: {e}", exc_info=True)
+            if self.current_run_id:
+                await self.db.update_run_status(self.current_run_id, RunStatus.FAILED)
+            raise
+        
+        return self.best_program
+
+    async def _initialize_run(self, resume: bool):
+        """Initialize a new evolution run or resume an existing one."""
+        if resume:
+            # TODO: Implement resume logic
+            raise NotImplementedError("Resuming from checkpoint is not yet implemented.")
+        
+        # Create a new run
+        self.current_run = await self.db.create_run(
+            problem_id=self.problem_id,
+            config=json.dumps(self.config.__dict__),
+            status=RunStatus.RUNNING
+        )
+        self.current_run_id = self.current_run.id
+
+        # Parse the initial code into a template and evolvable blocks
+        self.code_template, self.evolvable_blocks = parse_evolve_blocks(self.initial_code)
+        
+        # Evaluate the initial code to get a baseline
+        logger.info("Evaluating initial code...")
+        initial_eval = await self.evaluator.evaluate(self.initial_code, self.test_cases)
+        
+        if initial_eval.fitness is None:
+            raise ValueError(f"Initial code failed to evaluate. Error: {initial_eval.error}")
+
+        # Save the initial program as the first "best program"
+        self.best_program = await self.db.add_program(
+            run_id=self.current_run_id,
+            code=self.initial_code,
+            fitness=initial_eval.fitness,
+            evaluation_output=json.dumps(initial_eval.details),
+            status=ProgramStatus.INITIAL
+        )
+        logger.info(f"Initial program evaluated with fitness: {self.best_program.fitness}")
+
+    async def _save_checkpoint(self):
+        """Save the current state of the evolution run."""
+        logger.info(f"Saving checkpoint for run {self.current_run_id}...")
+        checkpoint_data = {
+            "best_program_id": self.best_program.id,
+            "block_evolution_idx": self.block_evolution_idx,
+            "code_template": self.code_template,
+            "evolvable_blocks": self.evolvable_blocks
+        }
+        await self.db.update_run_checkpoint(self.current_run_id, json.dumps(checkpoint_data))
+        logger.info("Checkpoint saved.")
+
+
+import asyncio
+import logging
+import os
+import json
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass
+from datetime import datetime
+from dotenv import load_dotenv
+import yaml
+from .database import Database, Program, EvolutionRun, RunStatus, ProgramStatus
+from .openai_client import OpenAIClient
+from .prompt_sampler import PromptSampler
+from .evaluator import CodeEvaluator, EvaluationResult
+from .utils import parse_evolve_blocks, reconstruct_code
+
+# Load environment variables
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AlphaEvolveConfig:
+    """Configuration for AlphaEvolve."""
+    iterations: int
+    checkpoint_interval: int
     
     # Gemini API settings
     model: str
@@ -41,25 +258,18 @@ class AlphaEvolveConfig:
     # Evaluation settings
     evaluation_timeout: int
     memory_limit_mb: int
-    
-    # Checkpointing
-    checkpoint_interval: int
-    
-    @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> 'AlphaEvolveConfig':
-        """Create config from dictionary."""
-        return cls(**{k: v for k, v in config_dict.items() if hasattr(cls, k)})
 
 
 class AlphaEvolve:
-    """Main orchestrator for evolutionary code optimization."""
-    
-    def __init__(self, 
+    """Main orchestrator for the AlphaEvolve process."""
+
+    def __init__(self,
                  problem_id: str,
                  problem_description: str,
                  evaluation_criteria: str,
-                 problem_type: str = "optimization",
-                 test_cases: Optional[Dict[str, Any]] = None,
+                 initial_code: str,
+                 problem_type: str,
+                 test_cases: List[Dict[str, Any]],
                  custom_evaluator: Optional[Callable] = None,
                  config: Optional[AlphaEvolveConfig] = None,
                  database_url: Optional[str] = None,
@@ -68,62 +278,52 @@ class AlphaEvolve:
         self.problem_id = problem_id
         self.problem_description = problem_description
         self.evaluation_criteria = evaluation_criteria
+        self.initial_code = initial_code
         self.problem_type = problem_type
         self.test_cases = test_cases
-        
+
         # Load configuration from file if not provided
         if config is None:
+            config_dict = {}
             try:
                 with open(config_path, 'r') as f:
                     config_dict = yaml.safe_load(f) or {}
             except Exception as e:
                 logger.warning(f"Failed to load config from {config_path}: {e}")
-                config_dict = {}
-                
-            evolution_config = config_dict.get('evolution', {})
+
             openai_config = config_dict.get('openai', {})
             evaluation_config = config_dict.get('evaluation', {})
+
             self.config = AlphaEvolveConfig(
-                population_size=evolution_config.get('population_size', 50),
-                generations=evolution_config.get('generations', 100),
-                elite_size=evolution_config.get('elite_size', 5),
-                mutation_rate=evolution_config.get('mutation_rate', 0.8),
-                crossover_rate=evolution_config.get('crossover_rate', 0.2),
-                exploration_rate=evolution_config.get('exploration_rate', 0.1),
-                model=openai_config.get('model', 'gemini-2.5-flash'),
+                iterations=config_dict.get('iterations', 100),
+                checkpoint_interval=config_dict.get('checkpoint_interval', 10),
+                model=openai_config.get('model', 'gpt-4-turbo'),
                 temperature=openai_config.get('temperature', 0.7),
                 max_tokens=openai_config.get('max_tokens', 4096),
                 evaluation_timeout=evaluation_config.get('timeout', 30),
                 memory_limit_mb=evaluation_config.get('memory_limit_mb', 512),
-                checkpoint_interval=evolution_config.get('checkpoint_interval', 10)
             )
         else:
             self.config = config
-        
+
         # Initialize components
         self.db = Database(database_url or os.getenv("DATABASE_URL", "sqlite:///alphaevolve.db"))
-        self.claude = OpenAIClient(model=self.config.model)
+        self.llm_client = OpenAIClient(model=self.config.model)
         self.prompt_sampler = PromptSampler(problem_description, evaluation_criteria)
         self.evaluator = CodeEvaluator(
             timeout=self.config.evaluation_timeout,
             memory_limit_mb=self.config.memory_limit_mb,
             custom_evaluator=custom_evaluator
         )
-        self.evolution_strategy = EvolutionStrategy(
-            population_size=self.config.population_size,
-            elite_size=self.config.elite_size,
-            mutation_rate=self.config.mutation_rate,
-            crossover_rate=self.config.crossover_rate,
-            exploration_rate=self.config.exploration_rate
-        )
-        
-        # State
+
+        # State for block-based evolution
         self.current_run: Optional[EvolutionRun] = None
         self.current_run_id: Optional[str] = None
-        self.population: List[Program] = []
-        self.generation = 0
         self.best_program: Optional[Program] = None
-    
+        self.code_template: Optional[str] = None
+        self.evolvable_blocks: List[str] = []
+        self.block_evolution_idx = 0
+
     async def run(self, resume_from_checkpoint: bool = False) -> Program:
         """Run the evolution process."""
         try:
@@ -183,54 +383,33 @@ class AlphaEvolve:
             )
             self.current_run_id = self.current_run.id
             
-            # Generate initial population
-            logger.info("Generating initial population...")
-            initial_prompts = [
-                self.prompt_sampler.generate_initial_prompt()
-                for _ in range(self.config.population_size)
-            ]
+            # Parse initial code
+            self.code_template, self.evolvable_blocks = parse_evolve_blocks(self.initial_code)
+            if not self.evolvable_blocks:
+                raise ValueError("No evolvable blocks found in the initial code. Use # EVOLVE-BLOCK-START and # EVOLVE-BLOCK-END markers.")
+
+            logger.info(f"Found {len(self.evolvable_blocks)} evolvable blocks.")
+
+            # Create and evaluate the initial program
+            logger.info("Evaluating initial program...")
+            initial_program_code = reconstruct_code(self.code_template, self.evolvable_blocks)
             
-            all_programs = []
-            for i, prompt in enumerate(initial_prompts):
-                try:
-                    response = await self.claude.generate(
-                        prompt.user_prompt,
-                        system_prompt=prompt.system_prompt,
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.max_tokens
-                    )
-                    code = self.claude.extract_code(response)
-                    # Save generated code for debugging
-                    with open(f"data/generated_code_{self.problem_id}_{i}.py", "w") as f:
-                        f.write(code)
-                    logger.debug(f"Generated code {i}: {code[:200]}...")
-                    
-                    program = self.db.create_program(
-                        session,
-                        code=code,
-                        problem_id=self.problem_id,
-                        generation=0
-                    )
-                    all_programs.append(program)
-                except Exception as e:
-                    logger.error(f"Failed to generate program {i}: {e}")
+            program = self.db.create_program(
+                session,
+                code=initial_program_code,
+                problem_id=self.problem_id,
+                generation=0
+            )
             
-            # Evaluate initial population
-            logger.info("Evaluating initial population...")
-            logger.info(f"Number of programs to evaluate: {len(all_programs)}")
-            await self._evaluate_programs(all_programs)
-            
-            # Filter programs that were successfully evaluated
-            self.population = []
-            for prog in all_programs:
-                logger.debug(f"Program {prog.id}: status={prog.status}, score={prog.score}")
-                if prog.status == ProgramStatus.EVALUATED and prog.score is not None:
-                    self.population.append(prog)
-                    logger.debug(f"Added program {prog.id} to population with score {prog.score}")
-            
-            self.generation = 0
-            
-            logger.info(f"Initial population size: {len(self.population)}")
+            await self._evaluate_programs([program])
+
+            if program.status == ProgramStatus.EVALUATED and program.score is not None:
+                self.best_program = program
+                logger.info(f"Initial program evaluated with score: {self.best_program.score}")
+            else:
+                raise RuntimeError("Initial program failed to evaluate.")
+
+            self.iteration = 0
             
         finally:
             session.close()
