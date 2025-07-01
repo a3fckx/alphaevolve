@@ -1,0 +1,26 @@
+# AlphaEvolve Configuration
+
+evolution:
+  population_size: 5
+  generations: 100
+  elite_size: 5
+  mutation_rate: 0.8
+  crossover_rate: 0.2
+  exploration_rate: 0.1
+  checkpoint_interval: 10
+
+openai:
+  model: "google/gemini-2.0-flash-exp:free"
+  temperature: 0.7
+  max_tokens: 20000
+
+evaluation:
+  timeout: 30  # seconds
+  memory_limit_mb: 512
+
+database:
+  url: "sqlite:///data/alphaevolve.db"
+
+logging:
+  level: "INFO"
+  file: "logs/alphaevolve.log"
