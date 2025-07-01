@@ -1,15 +1,15 @@
 # AlphaEvolve
 
-An implementation of Google DeepMind's AlphaEvolve - an evolutionary coding agent that uses Large Language Models (via OpenRouter with Gemini 2.0 Flash) to iteratively generate, evaluate, and optimize code for algorithmic problems.
+An implementation of Google DeepMind's AlphaEvolve - an evolutionary coding agent that uses Large Language Models (via Gemini API) to iteratively generate, evaluate, and optimize code for algorithmic problems.
 
 ## Overview
 
-AlphaEvolve uses evolutionary algorithms combined with LLMs to discover and optimize algorithms. The system maintains a population of candidate programs, evaluates their performance, and uses OpenRouter with Gemini 2.0 Flash to generate improved versions through various evolution strategies.
+AlphaEvolve uses evolutionary algorithms combined with LLMs to discover and optimize algorithms. The system maintains a population of candidate programs, evaluates their performance, and uses the Gemini API to generate improved versions through various evolution strategies.
 
 ### Key Features
 
 - **Evolutionary Optimization**: Uses mutation, crossover, and exploration strategies
-- **LLM-Powered Code Generation**: Leverages OpenRouter with Gemini 2.0 Flash for intelligent code modifications
+- **LLM-Powered Code Generation**: Leverages Gemini API for intelligent code modifications
 - **Sandboxed Evaluation**: Safe execution environment with resource limits
 - **Checkpoint/Resume**: Save and restore evolution progress
 - **Island Model**: Parallel evolution with migration for diversity
@@ -19,7 +19,7 @@ AlphaEvolve uses evolutionary algorithms combined with LLMs to discover and opti
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│ Prompt Sampler  │────►│ OpenRouter API   │────►│ Code Generator  │
+│ Prompt Sampler  │────►│ Gemini API       │────►│ Code Generator  │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
          ▲                                                 │
          │                                                 ▼
@@ -44,8 +44,8 @@ cd alphaevolve
 # Copy the example environment file
 cp .env.example .env
 
-# Edit .env and add your OpenAI API key for OpenRouter
-# OPENROUTER_API_KEY=your-actual-api-key-here
+# Edit .env and add your Gemini API key
+# GEMINI_API_KEY=your-actual-api-key-here
 ```
 
 3. Create required directories:
@@ -73,7 +73,7 @@ pip install -r requirements.txt
 4. Set up environment:
 ```bash
 cp .env.example .env
-# Edit .env and add your OpenAI API key for OpenRouter
+# Edit .env and add your Gemini API key
 ```
 
 ## Data Management
@@ -322,7 +322,7 @@ mypy src/
 
 ## Limitations
 
-- Requires OpenRouter API access (costs apply)
+- Requires Gemini API access (costs may apply)
 - Evaluation limited to Python code
 - Sandbox restrictions may affect some algorithms
 - Best for well-defined optimization problems

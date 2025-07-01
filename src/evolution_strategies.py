@@ -108,16 +108,28 @@ class EvolutionStrategy:
         return sorted_pop[-1]
     
     def select_evolution_strategy(self) -> str:
-        """Select which evolution strategy to use."""
-        r = random.random()
-        if r < self.mutation_rate:
+        """Select which evolution strategy to use with adaptive weighting."""
+        # Adjust rates dynamically based on generation and diversity
+        diversity = self.diversity_score(self.population) if hasattr(self, 'population') else 0.5
+        generation_factor = min(1.0, max(0.0, self.generation / 50.0) if hasattr(self, 'generation') else 0.0)
+        
+        # Increase diff_mutation in later generations for fine-tuning
+        adjusted_diff_rate = 0.1 + generation_factor * 0.3
+        adjusted_mutation_rate = self.mutation_rate * (1.0 - diversity * 0.2)
+        adjusted_crossover_rate = self.crossover_rate * (1.0 + diversity * 0.1)
+        adjusted_exploration_rate = self.exploration_rate * (1.0 + diversity * 0.3)
+        
+        total = adjusted_mutation_rate + adjusted_crossover_rate + adjusted_exploration_rate + adjusted_diff_rate
+        r = random.uniform(0, total)
+        
+        if r < adjusted_mutation_rate:
             return "mutation"
-        elif r < self.mutation_rate + self.crossover_rate:
+        elif r < adjusted_mutation_rate + adjusted_crossover_rate:
             return "crossover"
-        elif r < self.mutation_rate + self.crossover_rate + self.exploration_rate:
+        elif r < adjusted_mutation_rate + adjusted_crossover_rate + adjusted_exploration_rate:
             return "exploration"
         else:
-            return "diff_mutation"  # Added diff-based mutation for incremental improvements
+            return "diff_mutation"  # Enhanced diff-based mutation for incremental improvements
     
     def select_elite(self, population: List[Program]) -> List[Program]:
         """Select elite programs to preserve."""
@@ -190,27 +202,40 @@ class EvolutionStrategy:
         if len(population) < 2:
             return 1.0
         
-        # Simple diversity based on code length variation
-        lengths = [len(p.code) for p in population]
-        if not lengths:
-            return 1.0
+        # Enhanced diversity based on code content variation using simple token comparison
+        def code_similarity(code1: str, code2: str) -> float:
+            tokens1 = set(code1.split())
+            tokens2 = set(code2.split())
+            if not tokens1 or not tokens2:
+                return 0.0
+            intersection = len(tokens1.intersection(tokens2))
+            union = len(tokens1.union(tokens2))
+            return intersection / union if union > 0 else 0.0
         
-        mean_length = sum(lengths) / len(lengths)
-        variance = sum((l - mean_length) ** 2 for l in lengths) / len(lengths)
+        total_similarity = 0.0
+        comparisons = 0
+        for i in range(len(population)):
+            for j in range(i + 1, len(population)):
+                total_similarity += code_similarity(population[i].code, population[j].code)
+                comparisons += 1
         
-        # Normalize to 0-1 range
-        return min(1.0, variance / (mean_length ** 2) if mean_length > 0 else 1.0)
+        avg_similarity = total_similarity / comparisons if comparisons > 0 else 0.0
+        # Diversity is inverse of average similarity
+        return 1.0 - avg_similarity
     
     def adaptive_parameters(self, generation: int, diversity: float) -> None:
-        """Adapt evolution parameters based on progress."""
+        """Adapt evolution parameters based on progress and diversity."""
+        self.generation = generation  # Store for use in strategy selection
         # Increase exploration if diversity is low
         if diversity < 0.2:
-            self.exploration_rate = min(0.3, self.exploration_rate * 1.1)
-            self.mutation_rate = min(0.9, self.mutation_rate * 1.05)
+            self.exploration_rate = min(0.4, self.exploration_rate * 1.2)
+            self.mutation_rate = min(0.9, self.mutation_rate * 1.1)
+        else:
+            self.exploration_rate = max(0.05, self.exploration_rate * 0.95)
         
-        # Increase exploitation in later generations
+        # Increase exploitation and diff_mutation focus in later generations
         if generation > 50:
-            self.exploration_rate = max(0.05, self.exploration_rate * 0.99)
-            self.crossover_rate = min(0.4, self.crossover_rate * 1.01)
-            # Favor diff-based mutation in later stages for fine-tuning
-            self.mutation_rate = max(0.5, self.mutation_rate * 0.95)
+            self.crossover_rate = min(0.5, self.crossover_rate * 1.05)
+            self.mutation_rate = max(0.3, self.mutation_rate * 0.9)
+        else:
+            self.crossover_rate = max(0.1, self.crossover_rate * 0.95)

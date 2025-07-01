@@ -14,6 +14,7 @@ from .openai_client import OpenAIClient
 from .prompt_sampler import PromptSampler
 from .evaluator import CodeEvaluator, EvaluationResult
 from .evolution_strategies import EvolutionStrategy
+import yaml
 
 # Load environment variables
 load_dotenv()
@@ -25,24 +26,24 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AlphaEvolveConfig:
     """Configuration for AlphaEvolve."""
-    population_size: int = 50
-    generations: int = 100
-    elite_size: int = 5
-    mutation_rate: float = 0.8
-    crossover_rate: float = 0.2
-    exploration_rate: float = 0.1
+    population_size: int
+    generations: int
+    elite_size: int
+    mutation_rate: float
+    crossover_rate: float
+    exploration_rate: float
     
-    # OpenAI settings
-    model: str = "google/gemini-2.0-flash-exp:free"
-    temperature: float = 0.7
-    max_tokens: int = 20000
+    # Gemini API settings
+    model: str
+    temperature: float
+    max_tokens: int
     
     # Evaluation settings
-    evaluation_timeout: int = 30
-    memory_limit_mb: int = 512
+    evaluation_timeout: int
+    memory_limit_mb: int
     
     # Checkpointing
-    checkpoint_interval: int = 10
+    checkpoint_interval: int
     
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> 'AlphaEvolveConfig':
@@ -61,14 +62,43 @@ class AlphaEvolve:
                  test_cases: Optional[Dict[str, Any]] = None,
                  custom_evaluator: Optional[Callable] = None,
                  config: Optional[AlphaEvolveConfig] = None,
-                 database_url: Optional[str] = None):
+                 database_url: Optional[str] = None,
+                 config_path: str = "config/config.yaml"):
         """Initialize AlphaEvolve."""
         self.problem_id = problem_id
         self.problem_description = problem_description
         self.evaluation_criteria = evaluation_criteria
         self.problem_type = problem_type
         self.test_cases = test_cases
-        self.config = config or AlphaEvolveConfig()
+        
+        # Load configuration from file if not provided
+        if config is None:
+            try:
+                with open(config_path, 'r') as f:
+                    config_dict = yaml.safe_load(f) or {}
+            except Exception as e:
+                logger.warning(f"Failed to load config from {config_path}: {e}")
+                config_dict = {}
+                
+            evolution_config = config_dict.get('evolution', {})
+            openai_config = config_dict.get('openai', {})
+            evaluation_config = config_dict.get('evaluation', {})
+            self.config = AlphaEvolveConfig(
+                population_size=evolution_config.get('population_size', 50),
+                generations=evolution_config.get('generations', 100),
+                elite_size=evolution_config.get('elite_size', 5),
+                mutation_rate=evolution_config.get('mutation_rate', 0.8),
+                crossover_rate=evolution_config.get('crossover_rate', 0.2),
+                exploration_rate=evolution_config.get('exploration_rate', 0.1),
+                model=openai_config.get('model', 'gemini-2.5-flash'),
+                temperature=openai_config.get('temperature', 0.7),
+                max_tokens=openai_config.get('max_tokens', 4096),
+                evaluation_timeout=evaluation_config.get('timeout', 30),
+                memory_limit_mb=evaluation_config.get('memory_limit_mb', 512),
+                checkpoint_interval=evolution_config.get('checkpoint_interval', 10)
+            )
+        else:
+            self.config = config
         
         # Initialize components
         self.db = Database(database_url or os.getenv("DATABASE_URL", "sqlite:///alphaevolve.db"))
@@ -160,23 +190,16 @@ class AlphaEvolve:
                 for _ in range(self.config.population_size)
             ]
             
-            # Generate programs in batches
-            batch_size = 10
             all_programs = []
-            
-            for i in range(0, len(initial_prompts), batch_size):
-                batch = initial_prompts[i:i + batch_size]
-                batch_prompts = [p.user_prompt for p in batch]
-                
-                responses = await self.claude.batch_generate(
-                    batch_prompts,
-                    system_prompt=batch[0].system_prompt,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens
-                )
-                
-                for i, response in enumerate(responses):
-                    code = self.claude.extract_code(response.content)
+            for i, prompt in enumerate(initial_prompts):
+                try:
+                    response = await self.claude.generate(
+                        prompt.user_prompt,
+                        system_prompt=prompt.system_prompt,
+                        temperature=self.config.temperature,
+                        max_tokens=self.config.max_tokens
+                    )
+                    code = self.claude.extract_code(response)
                     # Save generated code for debugging
                     with open(f"data/generated_code_{self.problem_id}_{i}.py", "w") as f:
                         f.write(code)
@@ -189,6 +212,8 @@ class AlphaEvolve:
                         generation=0
                     )
                     all_programs.append(program)
+                except Exception as e:
+                    logger.error(f"Failed to generate program {i}: {e}")
             
             # Evaluate initial population
             logger.info("Evaluating initial population...")
@@ -317,13 +342,13 @@ class AlphaEvolve:
                 )
                 logger.info(f"Code generation completed in {asyncio.get_event_loop().time() - start_time:.2f}s")
             except asyncio.TimeoutError:
-                logger.error(f"Claude API timeout after 60s for generation {generation}")
+                logger.error(f"API timeout after 60s for generation {generation}")
                 return None
             except Exception as e:
-                logger.error(f"Claude API error: {type(e).__name__}: {e}")
+                logger.error(f"API error: {type(e).__name__}: {e}")
                 return None
             
-            code = self.claude.extract_code(response.content)
+            code = self.claude.extract_code(response)
             logger.debug(f"Extracted code length: {len(code)} characters")
             
             # Create program
@@ -519,10 +544,20 @@ class AlphaEvolve:
         return False
     
     async def _finalize_run(self):
-        """Finalize the evolution run."""
+        """Finalize the evolution run and save results."""
         await self._update_run_status(RunStatus.COMPLETED)
         if self.best_program:
             logger.info(f"Evolution completed. Best score: {self.best_program.score:.4f}")
+            # Save the best program to a file
+            result_filename = f"data/best_program_{self.problem_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
+            with open(result_filename, "w") as f:
+                f.write(f"# Best Program for {self.problem_id}\n")
+                f.write(f"# Score: {self.best_program.score}\n")
+                if self.best_program.metrics:
+                    f.write(f"# Metrics: {json.dumps(self.best_program.metrics, indent=2)}\n")
+                f.write("\n")
+                f.write(self.best_program.code)
+            logger.info(f"Best program saved to {result_filename}")
         else:
             logger.warning("Evolution completed but no valid programs were found.")
     

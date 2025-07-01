@@ -1,16 +1,19 @@
-"""OpenAI Client for AlphaEvolve using OpenRouter API."""
+"""OpenAI Client for AlphaEvolve using OpenRouter or Gemini API."""
 
 import os
 from openai import OpenAI
 
 class OpenAIClient:
-    """Client for interacting with OpenAI models via OpenRouter API."""
+    """Client for interacting with OpenAI models via OpenRouter or Gemini API."""
     
-    def __init__(self, api_key: str = None, base_url: str = "https://openrouter.ai/api/v1", model: str = "openai/gpt-4o"):
-        """Initialize the OpenAI client with OpenRouter configuration."""
-        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
+    def __init__(self, api_key: str = None, base_url: str = None, model: str = "gemini-2.5-flash"):
+        """Initialize the OpenAI client for Gemini API."""
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
-            raise ValueError("API key must be provided or set as OPENROUTER_API_KEY environment variable")
+            raise ValueError("API key must be provided or set as GEMINI_API_KEY environment variable")
+        
+        # Use Gemini API base URL
+        base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
         
         self.client = OpenAI(
             base_url=base_url,

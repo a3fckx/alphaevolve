@@ -6,7 +6,6 @@ from typing import List, Tuple, Dict, Any
 
 from src.alphaevolve import AlphaEvolve, AlphaEvolveConfig
 from src.evaluator import EvaluationResult
-from src.config_loader import load_config
 
 
 # Problem definition

@@ -6,7 +6,6 @@ from typing import List, Tuple, Dict, Any
 
 from src.alphaevolve import AlphaEvolve, AlphaEvolveConfig
 from src.evaluator import EvaluationResult
-from src.config_loader import load_config
 
 
 # Problem definition
@@ -233,22 +232,14 @@ except Exception as e:
 
 async def run_circle_packing(config_path: str = None):
     """Run the circle packing evolution."""
-    # Load config from file
-    config = load_config(config_path)
-    
-    # Override some settings specific to circle packing if needed
-    # config.population_size = 3  # Very small population for debugging
-    #config.generations = 2  # Just 2 generations for testing
-    #config.evaluation_timeout = 60  # More time for evaluation
-    #config.temperature = 0.5  # Lower temperature for more conservative code generation
-    
+    # Configuration is loaded directly in AlphaEvolve, pass the path if needed
     evolve = AlphaEvolve(
         problem_id=PROBLEM_ID,
         problem_description=PROBLEM_DESCRIPTION,
         evaluation_criteria=EVALUATION_CRITERIA,
         problem_type="optimization",
         custom_evaluator=evaluate_circle_packing,
-        config=config
+        config_path=config_path if config_path else "config/config.yaml"
     )
     
     best_program = await evolve.run()
