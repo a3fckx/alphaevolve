@@ -94,27 +94,27 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 Run an example problem:
 ```bash
-python -m src.main run --problem circle_packing
+python -m src run --problem circle_packing
 ```
 
 Resume from checkpoint:
 ```bash
-python -m src.main run --problem circle_packing --resume
+python -m src run --problem circle_packing --resume
 ```
 
 Use custom configuration:
 ```bash
-python -m src.main run --problem function_optimization --config config/custom.yaml
+python -m src run --problem function_optimization --config config/custom.yaml
 ```
 
 List available problems:
 ```bash
-python -m src.main list-problems
+python -m src list-problems
 ```
 
 Generate example configuration:
 ```bash
-python -m src.main generate-config --output config/example.yaml
+python -m src generate-config --output config/example.yaml
 ```
 
 **Note**: By default, AlphaEvolve uses `config/config.yaml` for configuration settings.
@@ -153,7 +153,7 @@ Pack 26 equal circles in a unit square to maximize radius.
 
 ```bash
 # Run from main module
-python -m src.main run --problem circle_packing
+python -m src run --problem circle_packing
 
 # Or run directly
 python examples/circle_packing/problem.py
@@ -164,7 +164,7 @@ Minimize the 10-dimensional Rastrigin function.
 
 ```bash
 # Run from main module
-python -m src.main run --problem function_optimization
+python -m src run --problem function_optimization
 
 # Or run directly
 python examples/function_optimization/problem.py
@@ -175,7 +175,7 @@ Optimize the arrangement of spheres to maximize the number of kissing points.
 
 ```bash
 # Run from main module
-python -m src.main run --problem kissing_spheres
+python -m src run --problem kissing_spheres
 
 # Or run directly
 python examples/kissing_spheres/problem.py
@@ -186,7 +186,7 @@ Optimize matrix multiplication for large matrices to achieve the fastest executi
 
 ```bash
 # Run from main module
-python -m src.main run --problem matrix_multiplication
+python -m src run --problem matrix_multiplication
 
 # Or run directly
 python examples/matrix_multiplication/problem.py
