@@ -21,13 +21,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EvaluationResult:
     """Result of code evaluation."""
-    score: float
-    metrics: Dict[str, Any]
-    success: bool
+    fitness: Optional[float]
+    details: Dict[str, Any]
     error: Optional[str] = None
-    stdout: Optional[str] = None
-    stderr: Optional[str] = None
-    execution_time: Optional[float] = None
 
 
 class CodeEvaluator:
@@ -47,14 +43,17 @@ class CodeEvaluator:
                       problem_type: str,
                       test_cases: Optional[Dict[str, Any]] = None) -> EvaluationResult:
         """Evaluate code and return results."""
+        # Debug: Print the code being passed to the evaluator
+        logger.info("Debug: Code being passed to evaluator:")
+        logger.info(code)
+        
         # First, check if code is syntactically valid
         try:
             ast.parse(code)
         except SyntaxError as e:
             return EvaluationResult(
-                score=0.0,
-                metrics={"syntax_error": str(e)},
-                success=False,
+                fitness=0.0,
+                details={"syntax_error": str(e)},
                 error=f"Syntax error: {e}"
             )
         
@@ -65,9 +64,8 @@ class CodeEvaluator:
             except Exception as e:
                 logger.error(f"Custom evaluator failed: {e}", exc_info=True)
                 return EvaluationResult(
-                    score=0.0,
-                    metrics={"evaluator_error": str(e), "traceback": traceback.format_exc()},
-                    success=False,
+                    fitness=0.0,
+                    details={"evaluator_error": str(e), "traceback": traceback.format_exc()},
                     error=f"Evaluator error: {e}\n{traceback.format_exc()}"
                 )
         
@@ -108,9 +106,8 @@ class CodeEvaluator:
                 process.kill()
                 await process.wait()
                 return EvaluationResult(
-                    score=0.0,
-                    metrics={"timeout": True, "execution_time": self.timeout},
-                    success=False,
+                    fitness=0.0,
+                    details={"timeout": True, "execution_time": self.timeout},
                     error=f"Execution timed out after {self.timeout} seconds"
                 )
             
@@ -123,29 +120,21 @@ class CodeEvaluator:
                     result = json.loads(result_json)
                     
                     return EvaluationResult(
-                        score=result['score'],
-                        metrics=result['metrics'],
-                        success=True,
-                        stdout='\n'.join(output_lines[:-1]) if len(output_lines) > 1 else None,
-                        execution_time=execution_time
+                        fitness=result.get('fitness'),
+                        details=result.get('details', {}),
+                        error=None
                     )
                 except (json.JSONDecodeError, KeyError, IndexError) as e:
                     return EvaluationResult(
-                        score=0.0,
-                        metrics={"parse_error": str(e)},
-                        success=False,
-                        error=f"Failed to parse evaluation results: {e}",
-                        stdout=stdout.decode() if stdout else None,
-                        stderr=stderr.decode() if stderr else None
+                        fitness=0.0,
+                        details={"parse_error": str(e)},
+                        error=f"Failed to parse evaluation results: {e}"
                     )
             else:
                 return EvaluationResult(
-                    score=0.0,
-                    metrics={"return_code": process.returncode},
-                    success=False,
-                    error=f"Execution failed with return code {process.returncode}",
-                    stdout=stdout.decode() if stdout else None,
-                    stderr=stderr.decode() if stderr else None
+                    fitness=0.0,
+                    details={"return_code": process.returncode},
+                    error=f"Execution failed with return code {process.returncode}: {stderr.decode()}"
                 )
                 
         finally:

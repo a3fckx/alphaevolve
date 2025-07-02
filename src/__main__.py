@@ -52,7 +52,7 @@ def run(config, problem, resume):
     # Run the appropriate problem
     if problem == "circle_packing":
         from examples.circle_packing.problem import run_circle_packing
-        asyncio.run(run_circle_packing(config_path=config))
+        asyncio.run(run_circle_packing())
     elif problem == "function_optimization":
         from examples.function_optimization.problem import run_function_optimization
         asyncio.run(run_function_optimization(config_path=config))
